@@ -318,6 +318,48 @@ test("web fallback is gated to fresh/current queries", async () => {
   }
 });
 
+test("fresh web search starts before the first answer model finishes", async () => {
+  const firecrawl = require("./firecrawl");
+  const knowledge = require("./knowledge");
+  const answer = require("./answer");
+  const origSearch = firecrawl.searchWeb;
+  const origCtx = knowledge.getContext;
+  const origChat = answer.getAnswerOrChat;
+  const origGrounded = answer.getGroundedAnswer;
+
+  let searchStarted = false;
+  let releaseAnswer: (() => void) | null = null;
+  const answerGate = new Promise<void>((resolve) => {
+    releaseAnswer = resolve;
+  });
+
+  firecrawl.searchWeb = async () => {
+    searchStarted = true;
+    releaseAnswer?.();
+    return [];
+  };
+  knowledge.getContext = () => "";
+  answer.getAnswerOrChat = async () => {
+    await answerGate;
+    assert.equal(searchStarted, true, "web search should already be in flight");
+    return { source: null, answer: "initial answer" };
+  };
+  answer.getGroundedAnswer = async () => null;
+
+  try {
+    const result = await lookup.answerOrChat("what is the latest stable node version?", "", {
+      allowWebSearch: true,
+    });
+    assert.equal(searchStarted, true);
+    assert.equal(result.answer, "initial answer");
+  } finally {
+    firecrawl.searchWeb = origSearch;
+    knowledge.getContext = origCtx;
+    answer.getAnswerOrChat = origChat;
+    answer.getGroundedAnswer = origGrounded;
+  }
+});
+
 test("shouldSearchWeb is conservative for static questions and catches changing facts", () => {
   for (const q of [
     "give me a cookie recipe",
