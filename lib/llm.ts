@@ -118,11 +118,11 @@ function providerRoutingFor(baseUrl: string) {
   } catch (_error: unknown) {
     return null;
   }
-  const requested = String(process.env.RIVET_OPENROUTER_PROVIDER_SORT || "latency")
+  const requested = String(process.env.RIVET_OPENROUTER_PROVIDER_SORT || "")
     .trim()
     .toLowerCase();
-  const sort = ["latency", "throughput", "price"].includes(requested) ? requested : "latency";
-  return { sort };
+  if (!["latency", "throughput", "price"].includes(requested)) return null;
+  return { sort: requested };
 }
 
 function usageFor(data: unknown): Usage {
