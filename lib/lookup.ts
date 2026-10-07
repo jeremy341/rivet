@@ -357,7 +357,9 @@ async function webFallback({
   webSearchReady?: Promise<WebResult[] | null> | null;
 }) {
   if (!allowWebSearch) return null;
-  const webResults = webSearchReady ? await webSearchReady : await firecrawl.searchWeb(question).catch(() => null);
+  const webResults = webSearchReady
+    ? await webSearchReady
+    : await firecrawl.searchWeb(question).catch(() => null);
   if (!webResults || webResults.length === 0) return null;
   const webSnippet = webResults.map((r: WebResult) => `Title: ${r.title}\nURL: ${r.url}\n${r.markdown}`).join("\n\n");
   const webContextPrompt = `${contextPrompt}\n\n=== WEB RESEARCH ===\n${webSnippet}`;
