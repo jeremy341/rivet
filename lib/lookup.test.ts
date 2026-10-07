@@ -282,7 +282,7 @@ test("deterministic dispatch reaches validator before retrieval", async () => {
   }
 });
 
-test("Firecrawl web fires only inside answerOrChat with allowWebSearch", async () => {
+test("web fallback is gated to fresh/current queries", async () => {
   const firecrawl = require("./firecrawl");
   const knowledge = require("./knowledge");
   const answer = require("./answer");
@@ -299,17 +299,44 @@ test("Firecrawl web fires only inside answerOrChat with allowWebSearch", async (
   answer.getAnswerOrChat = async () => ({ source: null, answer: "" });
   answer.getGroundedAnswer = async () => null;
   try {
-    await lookup.answerOrChat("obscure question xyzzy", "", { allowWebSearch: false });
-    assert.equal(webCalls, 0, "no web without explicit allowWebSearch");
-    await lookup.answerOrChat("obscure question xyzzy", "", { allowWebSearch: true });
-    assert.equal(webCalls, 1, "answerOrChat-only web fallback");
-    await lookup.lookupAnswer("obscure question xyzzy", "");
+    await lookup.answerOrChat("give me a chocolate chip cookie recipe", "", { allowWebSearch: true });
+    assert.equal(webCalls, 0, "static general knowledge should not pay for a web round trip");
+
+    await lookup.answerOrChat("what is the latest stable node version?", "", { allowWebSearch: false });
+    assert.equal(webCalls, 0, "freshness hints do not override the caller's web-search policy");
+
+    await lookup.answerOrChat("what is the latest stable node version?", "", { allowWebSearch: true });
+    assert.equal(webCalls, 1, "fresh/current questions may use web fallback");
+
+    await lookup.lookupAnswer("what is the latest stable node version?", "");
     assert.equal(webCalls, 1, "lookupAnswer (docs-only path) never touches the web");
   } finally {
     firecrawl.searchWeb = origSearch;
     knowledge.getContext = origCtx;
     answer.getAnswerOrChat = origChat;
     answer.getGroundedAnswer = origGrounded;
+  }
+});
+
+test("shouldSearchWeb is conservative for static questions and catches changing facts", () => {
+  for (const q of [
+    "give me a cookie recipe",
+    "how do i center a div",
+    "explain binary search",
+    "what is 12 times 13",
+    "yo whats up",
+  ]) {
+    assert.equal(lookup.shouldSearchWeb(q), false, q);
+  }
+
+  for (const q of [
+    "what is the latest stable node version?",
+    "what is the weather in berlin today?",
+    "look up the current price of the raspberry pi 5",
+    "who is the CEO of OpenAI?",
+    "what happened in AI news this week?",
+  ]) {
+    assert.equal(lookup.shouldSearchWeb(q), true, q);
   }
 });
 
