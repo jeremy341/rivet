@@ -45,6 +45,17 @@ interface WebResult {
 type AnswerMode = "docs-only" | "help-only" | "always";
 const DOCS_ONLY: AnswerMode = "docs-only";
 
+const WEB_FRESHNESS_HINTS =
+  /\b(news|latest|current(?:ly)?|today|tonight|tomorrow|yesterday|recent(?:ly)?|price|prices|cost|worth|stock|weather|forecast|score|scored|winner|won|released?|releasing|launch(?:ed|ing)?|announce[ds]?|update[ds]?|version|patch|trending|happening|right now|this (?:week|month|year)|20\d\d|look ?up|google|search (?:for|up))\b/i;
+const WEB_CHANGING_ROLE_HINTS =
+  /\b(?:ceo|cto|cfo|president|prime minister|chancellor|governor|mayor|chair(?:man|woman|person)?|current leader)\b/i;
+
+function shouldSearchWeb(question: string) {
+  const text = String(question || "").trim();
+  if (text.length < 4) return false;
+  return WEB_FRESHNESS_HINTS.test(text) || WEB_CHANGING_ROLE_HINTS.test(text);
+}
+
 function idOf(program: ProgramLike | string | null | undefined) {
   if (!program) return null;
   return typeof program === "string" ? program : program.id || null;
@@ -303,8 +314,16 @@ async function answerOrChat(
     if (direct) return direct;
 
     result =
-      (await webFallback({ question, contextPrompt, corpus, prog, channel, isPing, inHelpChannel, allowWebSearch })) ||
-      result;
+      (await webFallback({
+        question,
+        contextPrompt,
+        corpus,
+        prog,
+        channel,
+        isPing,
+        inHelpChannel,
+        allowWebSearch: allowWebSearch && shouldSearchWeb(question),
+      })) || result;
   }
 
   result = applyGroundingBoundary(result, prog, question, corpus);
@@ -368,4 +387,5 @@ export = {
   applyGroundingBoundary,
   isAuthoritativeOnlyTopic,
   numericClaimsGrounded,
+  shouldSearchWeb,
 };
