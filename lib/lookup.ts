@@ -297,6 +297,9 @@ async function answerOrChat(
   const staged = await runCodeStages(question);
   if (staged) return staged;
 
+  const webSearchReady =
+    allowWebSearch && shouldSearchWeb(question) ? firecrawl.searchWeb(question).catch(() => null) : null;
+
   const query = retrievalQuery(question, contextPrompt, prog);
   const corpus = knowledge.getContext(query, programId);
   let result = onText
@@ -322,7 +325,8 @@ async function answerOrChat(
         channel,
         isPing,
         inHelpChannel,
-        allowWebSearch: allowWebSearch && shouldSearchWeb(question),
+        allowWebSearch: Boolean(webSearchReady),
+        webSearchReady,
       })) || result;
   }
 
@@ -340,6 +344,7 @@ async function webFallback({
   isPing,
   inHelpChannel,
   allowWebSearch,
+  webSearchReady = null,
 }: {
   question: string;
   contextPrompt: string;
@@ -349,9 +354,10 @@ async function webFallback({
   isPing: boolean;
   inHelpChannel: boolean;
   allowWebSearch: boolean;
+  webSearchReady?: Promise<WebResult[] | null> | null;
 }) {
   if (!allowWebSearch) return null;
-  const webResults = await firecrawl.searchWeb(question).catch(() => null);
+  const webResults = webSearchReady ? await webSearchReady : await firecrawl.searchWeb(question).catch(() => null);
   if (!webResults || webResults.length === 0) return null;
   const webSnippet = webResults.map((r: WebResult) => `Title: ${r.title}\nURL: ${r.url}\n${r.markdown}`).join("\n\n");
   const webContextPrompt = `${contextPrompt}\n\n=== WEB RESEARCH ===\n${webSnippet}`;
