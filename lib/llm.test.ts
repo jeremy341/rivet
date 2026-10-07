@@ -573,18 +573,21 @@ test("streaming 503 fails over after one primary attempt before any text is show
   assert.equal(standbyCalls, 1);
 });
 
-test("OpenRouter routing defaults to latency and allows an explicit supported override", () => {
+test("OpenRouter routing stays default unless a supported sort is explicitly configured", () => {
   const saved = process.env.RIVET_OPENROUTER_PROVIDER_SORT;
   try {
     delete process.env.RIVET_OPENROUTER_PROVIDER_SORT;
-    assert.deepEqual(llm.providerRoutingFor("https://openrouter.ai/api/v1"), { sort: "latency" });
+    assert.equal(llm.providerRoutingFor("https://openrouter.ai/api/v1"), null);
     assert.equal(llm.providerRoutingFor("https://example.com/v1"), null);
+
+    process.env.RIVET_OPENROUTER_PROVIDER_SORT = "latency";
+    assert.deepEqual(llm.providerRoutingFor("https://openrouter.ai/api/v1"), { sort: "latency" });
 
     process.env.RIVET_OPENROUTER_PROVIDER_SORT = "throughput";
     assert.deepEqual(llm.providerRoutingFor("https://openrouter.ai/api/v1"), { sort: "throughput" });
 
     process.env.RIVET_OPENROUTER_PROVIDER_SORT = "nonsense";
-    assert.deepEqual(llm.providerRoutingFor("https://openrouter.ai/api/v1"), { sort: "latency" });
+    assert.equal(llm.providerRoutingFor("https://openrouter.ai/api/v1"), null);
   } finally {
     if (saved === undefined) delete process.env.RIVET_OPENROUTER_PROVIDER_SORT;
     else process.env.RIVET_OPENROUTER_PROVIDER_SORT = saved;
