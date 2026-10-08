@@ -106,6 +106,27 @@ function isRetryableError(err: LlmError) {
   return true;
 }
 
+function shouldFailFastToFallback(err: LlmError) {
+  // A 429 can recover immediately because onRateLimited() rotates pooled API
+  // keys before the next attempt. Other retryable failures are provider-level
+  // failures; if a fallback exists, retrying the broken tier three times only
+  // delays the fallback.
+  return err.response?.status !== 429;
+}
+
+function providerRoutingFor(baseUrl: string) {
+  try {
+    if (new URL(baseUrl).hostname !== "openrouter.ai") return null;
+  } catch (_error: unknown) {
+    return null;
+  }
+  const requested = String(process.env.RIVET_OPENROUTER_PROVIDER_SORT || "")
+    .trim()
+    .toLowerCase();
+  if (!["latency", "throughput", "price"].includes(requested)) return null;
+  return { sort: requested };
+}
+
 function usageFor(data: unknown): Usage {
   const usage = asRecord(asRecord(data).usage);
   return {
@@ -264,6 +285,7 @@ async function requestCompletion({
 }: CompletionOptions): Promise<CompletionResult> {
   const usedKey = typeof apiKey === "function" ? apiKey() : apiKey;
   const filteredThinking = thinkingFor(model, thinking);
+  const provider = providerRoutingFor(baseUrl);
 
   try {
     const res = await axios.post(
@@ -275,6 +297,7 @@ async function requestCompletion({
         ...(filteredThinking === undefined ? {} : { thinking: filteredThinking }),
         ...(reasoningEffort === undefined ? {} : { reasoning_effort: reasoningEffort }),
         ...(includeReasoning === undefined ? {} : { include_reasoning: includeReasoning }),
+        ...(provider ? { provider } : {}),
         messages,
       },
       {
@@ -304,7 +327,11 @@ async function requestCompletion({
   }
 }
 
-async function completeAttempts(options: CompletionOptions, scope: string): Promise<CompletionResult> {
+async function completeAttempts(
+  options: CompletionOptions,
+  scope: string,
+  failFastToFallback = false,
+): Promise<CompletionResult> {
   let lastError: LlmError | null = null;
   const requestId = options.telemetry?.requestId || crypto.randomUUID();
   const instrumented = {
@@ -343,6 +370,7 @@ async function completeAttempts(options: CompletionOptions, scope: string): Prom
       });
       noteRateLimit(options, err);
       if (!isRetryableError(err)) throw err;
+      if (failFastToFallback && shouldFailFastToFallback(err)) throw err;
       const status = err.response?.status || "network";
       log.debug(scope, `request failed (${status}), attempt ${attempt + 1}/${MAX_ATTEMPTS}`);
     }
@@ -369,7 +397,7 @@ async function complete(options: CompletionOptions, scope = "llm") {
   };
 
   try {
-    return await completeAttempts(primary, scope);
+    return await completeAttempts(primary, scope, Boolean(fallback));
   } catch (error: unknown) {
     const err = toLlmError(error);
     if (!fallback) throw err;
@@ -438,6 +466,7 @@ async function streamCompletion(options: CompletionOptions, onDelta: (delta: str
 
   const usedKey = typeof apiKey === "function" ? apiKey() : apiKey;
   const filteredThinking = thinkingFor(model, thinking);
+  const provider = providerRoutingFor(baseUrl);
 
   try {
     const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -453,6 +482,7 @@ async function streamCompletion(options: CompletionOptions, onDelta: (delta: str
         ...(filteredThinking === undefined ? {} : { thinking: filteredThinking }),
         ...(reasoningEffort === undefined ? {} : { reasoning_effort: reasoningEffort }),
         ...(includeReasoning === undefined ? {} : { include_reasoning: includeReasoning }),
+        ...(provider ? { provider } : {}),
         messages,
       }),
     });
@@ -550,6 +580,7 @@ async function streamAttempts(
   options: CompletionOptions,
   onDelta: (delta: string, text: string) => boolean | void,
   scope: string,
+  failFastToFallback = false,
 ) {
   let lastError: LlmError | null = null;
   const requestId = options.telemetry?.requestId || crypto.randomUUID();
@@ -592,6 +623,7 @@ async function streamAttempts(
       noteRateLimit(options, err);
       if (streamed) throw err;
       if (!isRetryableError(err)) throw err;
+      if (failFastToFallback && shouldFailFastToFallback(err)) throw err;
       const status = err.response?.status || "network";
       log.debug(scope, `stream failed (${status}), attempt ${attempt + 1}/${MAX_ATTEMPTS}`);
     }
@@ -624,7 +656,7 @@ async function completeStream(
   };
 
   try {
-    return await streamAttempts(primary, track, scope);
+    return await streamAttempts(primary, track, scope, Boolean(fallback));
   } catch (error: unknown) {
     const err = toLlmError(error);
     if (!fallback || streamedAny) throw err;
@@ -645,6 +677,8 @@ export = {
   thinkingFor,
   isRetryableStatus,
   isRetryableError,
+  shouldFailFastToFallback,
+  providerRoutingFor,
   stripThinking,
   keepAliveAgent,
   MAX_ATTEMPTS,

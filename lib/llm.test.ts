@@ -617,6 +617,104 @@ test("thinking param only goes to bare deepseek models, never gateway names", ()
   assert.equal(llm.thinkingFor("gpt-4o", { type: "enabled" }), undefined);
 });
 
+test("retryable provider failure fails over after one attempt when a fallback exists", async () => {
+  let primaryCalls = 0;
+  let standbyCalls = 0;
+  await withAxiosPost(
+    async (url: string) => {
+      if (url.startsWith("http://primary")) {
+        primaryCalls += 1;
+        const err = Object.assign(new Error("primary down"), { response: { status: 503 } });
+        throw err;
+      }
+      standbyCalls += 1;
+      return { data: { choices: [{ message: { content: "standby ok" }, finish_reason: "stop" }] } };
+    },
+    async () => {
+      const result = await llm.complete({
+        ...REQUEST,
+        baseUrl: "http://primary",
+        fallback: STANDBY,
+      });
+      assert.equal(result.text, "standby ok");
+    },
+  );
+  assert.equal(primaryCalls, 1, "do not burn all three attempts on a broken provider");
+  assert.equal(standbyCalls, 1);
+});
+
+test("429 still retries the current tier before using a fallback", async () => {
+  let primaryCalls = 0;
+  let standbyCalls = 0;
+  await withAxiosPost(
+    async (url: string) => {
+      if (url.startsWith("http://primary")) {
+        primaryCalls += 1;
+        if (primaryCalls === 1) {
+          const err = Object.assign(new Error("rate limited"), { response: { status: 429 } });
+          throw err;
+        }
+        return { data: { choices: [{ message: { content: "rotated key worked" }, finish_reason: "stop" }] } };
+      }
+      standbyCalls += 1;
+      return { data: { choices: [{ message: { content: "standby" }, finish_reason: "stop" }] } };
+    },
+    async () => {
+      const result = await llm.complete({
+        ...REQUEST,
+        baseUrl: "http://primary",
+        fallback: STANDBY,
+      });
+      assert.equal(result.text, "rotated key worked");
+    },
+  );
+  assert.equal(primaryCalls, 2);
+  assert.equal(standbyCalls, 0);
+});
+
+test("streaming 503 fails over after one primary attempt before any text is shown", async () => {
+  let primaryCalls = 0;
+  let standbyCalls = 0;
+  const fetchImpl = byBaseUrl({
+    "http://primary": (...args: Parameters<typeof fetch>) => {
+      primaryCalls += 1;
+      return fakeFetch([], { status: 503 })(...args);
+    },
+    "http://standby": (...args: Parameters<typeof fetch>) => {
+      standbyCalls += 1;
+      return fakeFetch([sse("stream standby")])(...args);
+    },
+  });
+
+  const result = await withFetch<StreamResult>(fetchImpl, () =>
+    llm.completeStream({ ...REQUEST, baseUrl: "http://primary", fallback: STANDBY }, () => {}),
+  );
+  assert.equal(result.text, "stream standby");
+  assert.equal(primaryCalls, 1);
+  assert.equal(standbyCalls, 1);
+});
+
+test("OpenRouter routing stays default unless a supported sort is explicitly configured", () => {
+  const saved = process.env.RIVET_OPENROUTER_PROVIDER_SORT;
+  try {
+    delete process.env.RIVET_OPENROUTER_PROVIDER_SORT;
+    assert.equal(llm.providerRoutingFor("https://openrouter.ai/api/v1"), null);
+    assert.equal(llm.providerRoutingFor("https://example.com/v1"), null);
+
+    process.env.RIVET_OPENROUTER_PROVIDER_SORT = "latency";
+    assert.deepEqual(llm.providerRoutingFor("https://openrouter.ai/api/v1"), { sort: "latency" });
+
+    process.env.RIVET_OPENROUTER_PROVIDER_SORT = "throughput";
+    assert.deepEqual(llm.providerRoutingFor("https://openrouter.ai/api/v1"), { sort: "throughput" });
+
+    process.env.RIVET_OPENROUTER_PROVIDER_SORT = "nonsense";
+    assert.equal(llm.providerRoutingFor("https://openrouter.ai/api/v1"), null);
+  } finally {
+    if (saved === undefined) delete process.env.RIVET_OPENROUTER_PROVIDER_SORT;
+    else process.env.RIVET_OPENROUTER_PROVIDER_SORT = saved;
+  }
+});
+
 test("provider exhaustion with no fallback left rejects (defined degradation)", async () => {
   await withAxiosPost(
     async () => {
